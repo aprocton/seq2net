@@ -1,4 +1,4 @@
-# import igraph
+#import igraph
 import pandas as pd
 import numpy as np
 
@@ -43,11 +43,30 @@ class SequentialData:
         # subset data and add a count column of ones if count=None
         if count:
             cols = {'subj': self.data[subj],
-                    'count': self.data[count],
+                    'count': self.data[count].astype(float),
                     'partners': self.data[soc]}
         else:
             cols = {'subj': self.data[subj],
                     'count': np.ones(self.data[subj].size),
                     'partners': self.data[soc]}
 
-        return cols
+        df = pd.DataFrame(cols)
+
+        # create dictionary of unique subjects and total observation time
+        subj = {}
+
+        for id in pd.Series.unique(df.subj):
+            subj[id] = df.loc[df.subj == id, 'count'].sum()
+
+        # split entries with multiple social partners
+
+        # create matrix of total observed social behavior
+        obs = df.pivot_table(values='count',
+                             index='subj',
+                             columns='partners',
+                             aggfunc='sum')
+
+        # filter matrix to only include interactions between subjects
+        obs = obs.filter(items=subj.keys(), axis=1)
+
+        return(obs)
