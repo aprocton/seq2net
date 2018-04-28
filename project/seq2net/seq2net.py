@@ -43,11 +43,11 @@ class SequentialData:
         # subset data and add a count column of ones if count=None
         if count:
             cols = {'subj': self.data[subj],
-                    'count': self.data[count].astype(float),
+                    'dur': self.data[count].astype(float),
                     'partners': self.data[soc]}
         else:
             cols = {'subj': self.data[subj],
-                    'count': np.ones(self.data[subj].size),
+                    'dur': np.ones(self.data[subj].size),
                     'partners': self.data[soc]}
 
         df = pd.DataFrame(cols)
@@ -56,12 +56,14 @@ class SequentialData:
         subj = {}
 
         for id in pd.Series.unique(df.subj):
-            subj[id] = df.loc[df.subj == id, 'count'].sum()
+            subj[id] = df.loc[df.subj == id, 'dur'].sum()
 
         # split entries with multiple social partners
+        df = pd.DataFrame(partner_split(df.as_matrix(), 1))
+        df.columns = ['dur', 'partners', 'subj']
 
         # create matrix of total observed social behavior
-        obs = df.pivot_table(values='count',
+        obs = df.pivot_table(values='dur',
                              index='subj',
                              columns='partners',
                              aggfunc='sum')
@@ -70,3 +72,33 @@ class SequentialData:
         obs = obs.filter(items=subj.keys(), axis=1)
 
         return(obs)
+
+
+def partner_split(arr, col):
+    # mask/lookup table for rows with multiple partners
+    mask = np.vstack([range(arr.shape[0]), np.ones(arr.shape[0], dtype=bool)]).transpose()
+
+    # iterate through and populate mask
+    for i in range(arr.shape[0]):
+        if (isinstance(arr[i, col], float)):     # account for possible nan
+            mask[i, 1] = False
+        else:                                    # true if more than one partner
+            mask[i, 1] = (len(arr[i, col].split(', ')) > 1)
+
+    newarr = arr.copy()
+
+    # iterate through again and split rows with multiple partners
+    for i in range(arr.shape[0]):
+        if mask[i, 1]:
+            newids = newarr[i, col].split(', ')
+
+            # append new rows for each split ID
+            for id in newids:
+                row = newarr[i, :]
+                row[col] = id
+                newarr = np.vstack([newarr, row])
+
+    # delete all rows with multiple partners at once 
+    newarr = np.delete(newarr, mask[mask[:, 1],0], axis=0)
+    
+    return(newarr)
