@@ -1,4 +1,4 @@
-#import igraph
+import igraph
 import pandas as pd
 import numpy as np
 
@@ -19,7 +19,7 @@ class SequentialData:
 
         self.data = data
 
-    def network(self, subj, soc, count=None):
+    def adjacency(self, subj, soc, count=None):
         # TODO: add interval variable
         """
         Return the social network from serial observations of behavior
@@ -52,38 +52,68 @@ class SequentialData:
 
         df = pd.DataFrame(cols)
 
-        # create dictionary of unique subjects and total observation time
-        subj = {}
+        # create lookup table of unique subjects and total observation time
+        unique = df.subj.unique().tolist()
+        subjdur = pd.DataFrame({'subj': df.subj, 'dur': df.dur}).as_matrix()
 
-        for id in pd.Series.unique(df.subj):
-            subj[id] = df.loc[df.subj == id, 'dur'].sum()
+        times = subjtime(unique, subjdur)
+
+        times
 
         # split entries with multiple social partners
-        df = pd.DataFrame(partner_split(df.as_matrix(), 1))
+        df = pd.DataFrame(partner_split(df.as_matrix(), 1, ', '))
         df.columns = ['dur', 'partners', 'subj']
 
         # create matrix of total observed social behavior
-        obs = df.pivot_table(values='dur',
-                             index='subj',
-                             columns='partners',
-                             aggfunc='sum')
-
-        # filter matrix to only include interactions between subjects
-        obs = obs.filter(items=subj.keys(), axis=1)
+        obs = matrix(df.as_matrix(), times)
 
         return(obs)
 
+    def network(self, subj, soc, count=None):
+        matrix = self.adjacency(subj, soc, count)
 
-def partner_split(arr, col):
+        # create igraph Graph
+        g = igraph.Graph.Adjacency((matrix > 0).tolist())
+
+        # add node labels
+        subj = self.data.subj.unique().tolist()
+        g.vs['label'] = subj
+
+        # add edge weights
+        g.es['weight'] = matrix[matrix.nonzero()]
+
+        return(g)
+
+
+def partner_split(arr, col, sstring):
+    """
+    Duplicate rows of a numpy array if there are multiple social partners
+    --------
+    Parameters
+        arr: numpy ndarray
+            array to apply partner_split to
+        col: int
+            the column containing the social behavior to split on
+        sstring: str
+            the string separating individual partner IDs
+    --------
+    Returns:
+        newarr: numpy ndarray
+            a modified copy of arr:
+                rows including multiple social partners deleted
+                pairs of duplicate rows appended for each deleted row
+    """
+
     # mask/lookup table for rows with multiple partners
-    mask = np.vstack([range(arr.shape[0]), np.ones(arr.shape[0], dtype=bool)]).transpose()
+    mask = np.vstack([range(arr.shape[0]),
+                      np.ones(arr.shape[0], dtype=bool)]).transpose()
 
     # iterate through and populate mask
     for i in range(arr.shape[0]):
-        if (isinstance(arr[i, col], float)):     # account for possible nan
+        if (isinstance(arr[i, col], float)):    # account for possible nan
             mask[i, 1] = False
-        else:                                    # true if more than one partner
-            mask[i, 1] = (len(arr[i, col].split(', ')) > 1)
+        else:                                   # true if more than one partner
+            mask[i, 1] = (len(arr[i, col].split(sstring)) > 1)
 
     newarr = arr.copy()
 
@@ -98,7 +128,76 @@ def partner_split(arr, col):
                 row[col] = id
                 newarr = np.vstack([newarr, row])
 
-    # delete all rows with multiple partners at once 
-    newarr = np.delete(newarr, mask[mask[:, 1],0], axis=0)
-    
+    # delete all rows with multiple partners at once
+    newarr = np.delete(newarr, mask[mask[:, 1], 0], axis=0)
+
     return(newarr)
+
+
+def subjtime(subj, data):
+    """
+    Create a lookup table of unique subjects and total obs time for each
+    --------
+    Arguments:
+        subj: list
+            a list of unique subjects from sequential sampling
+        data: np ndarray
+            array with names of subjects and durations of single observations
+    --------
+    Returns:
+        subjtime: ndarray
+            a two-row ndarray with names of subjects in the first row and total
+            observation time for each subject in the second row
+    """
+    subjtime = np.zeros((2, len(subj)), dtype=object)
+
+    for i in range(len(subj)):
+        subjtime[0, i] = str(subj[i])
+
+        mask = data[:, 1] == subj[i]
+        subjtime[1, i] = str(data[mask, 0].sum())
+
+    return(subjtime)
+
+
+def matrix(data, times):
+    """
+    Create an adjacency matrix from sequential data with observation times
+    --------
+    Arguments:
+        data: np ndarray
+            the dataframe holding information on focal subjects, individual
+            partners, and the duration of social behaviors
+        times: np ndarray
+            a lookup table of unique subjects and total obseravtion times
+    --------
+    Returns:
+        mat: np ndarray
+            an adjacency matrix of directed, weighted social affiliation for
+            a group of individuals
+    """
+    # instantiate adjacency matrix
+    mat = np.zeros((times.shape[1], times.shape[1]), dtype=float)
+
+    for i in range(times.shape[1]):
+        for j in range(times.shape[1]):
+            if(i == j):
+                # no interactions with self
+                mat[i, j] = 0
+            else:
+                # create mask for rows with i as subj
+                mask = data[:, 2] == times[0, i]
+
+                # modify mask to include rows with j as partner
+                for row in range(len(data)):
+                    if mask[row]:
+                        if data[row, 1] != times[0, j]:
+                            mask[row] = False
+
+                # social time for partners i and j
+                ptime = data[mask, 0].sum()
+
+                # normalized by total obs time for i and j
+                mat[i, j] = ptime/(float(times[1, i]) + float(times[1, j]))
+
+    return(mat)
