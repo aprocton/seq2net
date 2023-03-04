@@ -3,88 +3,6 @@ import pandas as pd
 import numpy as np
 
 
-class SequentialData:
-    """
-    Converts sequential behavior data (e.g. from focal animal sampling) to
-    igraph network objects
-    """
-    def __init__(self, data):
-        """
-        Return a new SequenceData object with a dataframe containing data
-        --------
-        Parameters:
-            data: pandas DataFrame
-                the full sequential observation data to convert to networks
-        """
-
-        self.data = data
-
-    def adjacency(self, subj, soc, count=None):
-        # TODO: add interval variable
-        """
-        Return the social network from serial observations of behavior
-        --------
-        Parameters:
-            subj: char
-                the name of the column containing the name of the subject
-            soc: char
-                the name of the column containing social partners for a
-                given behavior
-            count: char
-                the name of the dataframe column containing the count of
-                observations of the behavior
-        --------
-        Returns:
-            network: igraph Network object
-                the weighted network of interactions estimated using the
-                behavior recorded in var
-        """
-
-        # subset data and add a count column of ones if count=None
-        if count:
-            cols = {'subj': self.data[subj],
-                    'dur': self.data[count].astype(float),
-                    'partners': self.data[soc]}
-        else:
-            cols = {'subj': self.data[subj],
-                    'dur': np.ones(self.data[subj].size),
-                    'partners': self.data[soc]}
-
-        df = pd.DataFrame(cols)
-
-        # create lookup table of unique subjects and total observation time
-        unique = df.subj.unique().tolist()
-        subjdur = pd.DataFrame({'subj': df.subj, 'dur': df.dur}).as_matrix()
-
-        times = subjtime(unique, subjdur)
-
-        times
-
-        # split entries with multiple social partners
-        df = pd.DataFrame(partner_split(df.as_matrix(), 1, ', '))
-        df.columns = ['dur', 'partners', 'subj']
-
-        # create matrix of total observed social behavior
-        obs = matrix(df.as_matrix(), times)
-
-        return(obs)
-
-    def network(self, subj, soc, count=None):
-        matrix = self.adjacency(subj, soc, count)
-
-        # create igraph Graph
-        g = igraph.Graph.Adjacency((matrix > 0).tolist())
-
-        # add node labels
-        subj = self.data.subj.unique().tolist()
-        g.vs['label'] = subj
-
-        # add edge weights
-        g.es['weight'] = matrix[matrix.nonzero()]
-
-        return(g)
-
-
 def partner_split(arr, col, sstring):
     """
     Duplicate rows of a numpy array if there are multiple social partners
@@ -120,21 +38,21 @@ def partner_split(arr, col, sstring):
     # iterate through again and split rows with multiple partners
     for i in range(arr.shape[0]):
         if mask[i, 1]:
-            newids = newarr[i, col].split(', ')
+            newids = newarr[i, col].split(sstring)
 
             # append new rows for each split ID
             for id in newids:
-                row = newarr[i, :]
+                row = newarr[i, :].copy()
                 row[col] = id
                 newarr = np.vstack([newarr, row])
 
     # delete all rows with multiple partners at once
-    newarr = np.delete(newarr, mask[mask[:, 1], 0], axis=0)
+    newarr = np.delete(newarr, mask[mask[:, 1] == 1, 0], axis=0)
 
     return(newarr)
 
 
-def subjtime(subj, data):
+def _subjtime(subj, data):
     """
     Create a lookup table of unique subjects and total obs time for each
     --------
@@ -154,22 +72,23 @@ def subjtime(subj, data):
     for i in range(len(subj)):
         subjtime[0, i] = str(subj[i])
 
-        mask = data[:, 1] == subj[i]
-        subjtime[1, i] = str(data[mask, 0].sum())
+        mask = data[:, 0] == subj[i]
+        subjtime[1, i] = str(data[mask, 1].sum())
 
     return(subjtime)
 
 
-def matrix(data, times):
+def _adj_matrix(data, times):
     """
     Create an adjacency matrix from sequential data with observation times
     --------
     Arguments:
         data: np ndarray
             the dataframe holding information on focal subjects, individual
-            partners, and the duration of social behaviors
+            partners, and the duration of social behaviors (with columns in the
+            order subj, dur, partner)
         times: np ndarray
-            a lookup table of unique subjects and total obseravtion times
+            a lookup table of unique subjects and total observation times
     --------
     Returns:
         mat: np ndarray
@@ -179,25 +98,123 @@ def matrix(data, times):
     # instantiate adjacency matrix
     mat = np.zeros((times.shape[1], times.shape[1]), dtype=float)
 
+    # step through all subject, partner pairs
     for i in range(times.shape[1]):
         for j in range(times.shape[1]):
             if(i == j):
-                # no interactions with self
+                # no interactions with self are possible
                 mat[i, j] = 0
             else:
                 # create mask for rows with i as subj
-                mask = data[:, 2] == times[0, i]
+                mask = data[:, 0] == times[0, i]
 
                 # modify mask to include rows with j as partner
                 for row in range(len(data)):
                     if mask[row]:
-                        if data[row, 1] != times[0, j]:
+                        if data[row, 2] != times[0, j]:
                             mask[row] = False
 
                 # social time for partners i and j
-                ptime = data[mask, 0].sum()
+                ptime = data[mask, 1].sum()
 
                 # normalized by total obs time for i and j
-                mat[i, j] = ptime/(float(times[1, i]) + float(times[1, j]))
+                norm_ptime = ptime/(float(times[1, i]) + float(times[1, j]))
+                mat[i, j] = norm_ptime
 
     return(mat)
+
+class SequentialData:
+    """
+    Converts sequential behavior data (e.g. from focal animal sampling) to
+    igraph network objects
+    """
+    def __init__(self, data):
+        """
+        Return a new SequenceData object with a dataframe containing data
+        --------
+        Parameters:
+            data: pandas DataFrame
+                the full sequential observation data to create networks from
+        """
+
+        self.data = data
+
+    def get_adj_matrix(self, subj, soc, count=None):
+        """
+        Return the adjacency matrix from serial observations of behavior
+        --------
+        Parameters:
+            subj: char
+                the name of the column containing the name of the subject
+            soc: char
+                the name of the column containing social partners for a
+                given behavior
+            count: char
+                the name of the dataframe column containing the count of
+                observations of the behavior
+        --------
+        Returns:
+            obs: np ndarray
+                an adjacency matrix of directed, weighted social affiliation for
+                a group of individuals
+        """
+
+        # keep relevant columns and add a count column of ones if count=None
+        if count:
+            cols = {'subj': self.data[subj],
+                    'dur': self.data[count].astype(float),
+                    'partners': self.data[soc]}
+        else:
+            cols = {'subj': self.data[subj],
+                    'dur': np.ones(self.data[subj].size),
+                    'partners': self.data[soc]}
+
+        df = pd.DataFrame(cols)
+
+        # create lookup table of unique subjects and total observation time
+        unique = df.subj.unique().tolist()
+        subjdur = pd.DataFrame({'subj': df.subj, 'dur': df.dur}).to_numpy()
+
+        times = _subjtime(unique, subjdur)
+
+        # split entries with multiple social partners
+        df = pd.DataFrame(partner_split(df.to_numpy(), 2, ', '))
+        df.columns = ['subj', 'dur', 'partners']
+        
+        # create matrix of total observed social behavior
+        obs = _adj_matrix(df.to_numpy(), times)
+
+        return(obs)
+
+    def get_network(self, subj, soc, count=None):
+        """
+        Return the social network from serial observations of behavior
+        --------
+        Parameters:
+            subj: char
+                the name of the column containing the name of the subject
+            soc: char
+                the name of the column containing social partners for a
+                given behavior
+            count: char
+                the name of the dataframe column containing the count of
+                observations of the behavior
+        --------
+        Returns:
+            network: igraph Network object
+                the weighted network of interactions estimated using the
+                behavior recorded in var
+        """
+        matrix = self.get_adj_matrix(subj, soc, count)
+
+        # create igraph Graph
+        g = igraph.Graph.Adjacency((matrix > 0).tolist())
+
+        # add node labels
+        subj = self.data.subj.unique().tolist()
+        g.vs['label'] = subj
+
+        # add edge weights
+        g.es['weight'] = matrix[matrix.nonzero()]
+
+        return(g)
